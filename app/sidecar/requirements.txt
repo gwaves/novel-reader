@@ -1,0 +1,26 @@
+fastapi==0.115.0
+uvicorn[standard]==0.32.0
+pydantic==2.9.0
+python-multipart==0.0.12
+
+# Document parsing
+ebooklib==0.18
+beautifulsoup4==4.12.0
+PyMuPDF==1.24.0
+chardet==5.2.0
+
+# Embedding
+optimum[onnxruntime]==1.23.0
+tokenizers==0.20.0
+numpy==1.26.0
+
+# LLM
+openai==1.52.0
+httpx==0.27.0
+
+# Ranking
+rank-bm25==0.2.2
+
+# Utils
+aiofiles==24.1.0
+python-jsonrpc-server==0.4.0

@@ -1,0 +1,40 @@
+[package]
+name = "novel-reader"
+version = "0.1.0"
+description = "小说阅读助理 - All-in-One macOS App"
+authors = ["Claude"]
+edition = "2021"
+rust-version = "1.78"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+tauri-plugin-shell = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+anyhow = "1"
+thiserror = "1"
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+rusqlite = { version = "0.32", features = ["bundled", "chrono", "uuid"] }
+dirs = "5"
+
+# Keychain (macOS)
+security-framework = "2"
+security-framework-sys = "2"
+
+# KuzuDB (check latest version on crates.io)
+# kuzu = "0.7"
+
+# LanceDB
+# lancedb = "0.10"
+
+[features]
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
+
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
