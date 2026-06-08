@@ -29,9 +29,10 @@ pub fn main() {
         .setup(|app| {
             let handle = app.handle().clone();
 
-            let app_dir = dirs::data_dir()
-                .expect("Failed to get data dir")
-                .join("NovelReader");
+            // Use home dir subdirectory to avoid spaces in path (e.g. "Application Support")
+            let app_dir = dirs::home_dir()
+                .expect("Failed to get home dir")
+                .join(".novelreader");
             std::fs::create_dir_all(&app_dir)?;
             std::fs::create_dir_all(app_dir.join("novels"))?;
             std::fs::create_dir_all(app_dir.join("models"))?;

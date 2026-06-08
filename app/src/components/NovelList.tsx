@@ -1,5 +1,6 @@
-import { useEffect, useCallback, useState } from "react";
+import { useEffect, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
+import { listen } from "@tauri-apps/api/event";
 import { useNovelStore } from "../store/novelStore";
 import type { NovelStatus } from "../types";
 
@@ -19,14 +20,32 @@ const STATUS_LABELS: Record<NovelStatus, string> = {
 };
 
 /** 解析进度计算 */
-function calcProgress(novel: { status: NovelStatus; progress: { chaptersExtracted: number; vectorsIndexed: number; entitiesExtracted: number }; totalChapters: number }): number {
+function calcProgress(novel: { status: NovelStatus; progress?: { chaptersExtracted: number; vectorsIndexed: number; entitiesExtracted: number }; totalChapters: number }): number {
   if (!isParsing(novel.status)) return 100;
+  const progress = novel.progress || { chaptersExtracted: 0, vectorsIndexed: 0, entitiesExtracted: 0 };
   // 简单估算：假设解析分三个阶段各占 1/3
-  const chapterRatio = novel.totalChapters > 0 ? novel.progress.chaptersExtracted / novel.totalChapters : 0;
-  const vectorRatio = novel.totalChapters > 0 ? novel.progress.vectorsIndexed / novel.totalChapters : 0;
-  const entityRatio = novel.totalChapters > 0 ? novel.progress.entitiesExtracted / novel.totalChapters : 0;
+  const chapterRatio = novel.totalChapters > 0 ? progress.chaptersExtracted / novel.totalChapters : 0;
+  const vectorRatio = novel.totalChapters > 0 ? progress.vectorsIndexed / novel.totalChapters : 0;
+  const entityRatio = novel.totalChapters > 0 ? progress.entitiesExtracted / novel.totalChapters : 0;
   const avg = (chapterRatio + vectorRatio + entityRatio) / 3;
   return Math.min(Math.round(avg * 100), 99);
+}
+
+/** 持久化日志 */
+const LOG_KEY = "novelreader_novel_logs";
+function readLogs(): string[] {
+  try {
+    return JSON.parse(localStorage.getItem(LOG_KEY) || "[]");
+  } catch {
+    return [];
+  }
+}
+function writeLogs(logs: string[]) {
+  try {
+    localStorage.setItem(LOG_KEY, JSON.stringify(logs.slice(-50)));
+  } catch {
+    // ignore
+  }
 }
 
 export default function NovelList() {
@@ -43,55 +62,116 @@ export default function NovelList() {
 
   const [dragOver, setDragOver] = useState(false);
   const [importing, setImporting] = useState(false);
+  const [logs, setLogs] = useState<string[]>(readLogs());
+
+  const addLog = (msg: string) => {
+    const entry = `${new Date().toLocaleTimeString()} ${msg}`;
+    setLogs((prev) => {
+      const next = [...prev, entry];
+      writeLogs(next);
+      return next;
+    });
+  };
+
+  const clearLogs = () => {
+    setLogs([]);
+    localStorage.removeItem(LOG_KEY);
+  };
 
   useEffect(() => {
+    addLog("[NovelList] MOUNTED");
     fetchNovels();
   }, [fetchNovels]);
 
-  const handleImportClick = async () => {
-    const file = await open({
-      multiple: false,
-      directory: false,
-      filters: [{ name: "Novel Files", extensions: ["txt", "epub", "pdf"] }],
-    });
-    if (file && typeof file === "string") {
-      setImporting(true);
-      await importNovel(file);
-      setImporting(false);
-    }
-  };
+  // Tauri 原生拖拽事件监听
+  useEffect(() => {
+    let unlistenDrop: (() => void) | undefined;
+    let unlistenOver: (() => void) | undefined;
+    let unlistenLeave: (() => void) | undefined;
 
-  const handleDrop = useCallback(
-    async (e: React.DragEvent) => {
-      e.preventDefault();
-      setDragOver(false);
-      const files = Array.from(e.dataTransfer.files);
-      const validFile = files.find((f) =>
-        ["txt", "epub", "pdf"].includes(f.name.split(".").pop()?.toLowerCase() || "")
-      );
-      if (validFile) {
-        // 在 Tauri 中，拖拽文件的路径可以通过 Tauri API 获取，
-        // 但 HTML5 drag 的 File 对象在 Webview 中可能无法直接拿到绝对路径。
-        // 这里假设使用 Tauri 的 dialog open 作为兜底，或者前端通过其他方式传递路径。
-        // 为了演示，我们尝试使用 webkitGetAsEntry 或 path 属性（Tauri 环境下通常可用）
-        const path = (validFile as any).path as string | undefined;
-        if (path) {
-          setImporting(true);
-          await importNovel(path);
+    const setup = async () => {
+      addLog("[DragDrop] setting up listeners...");
+      try {
+        unlistenDrop = await listen<{ paths: string[] }>("tauri://drag-drop", async (event) => {
+          addLog("[DragDrop] tauri://drag-drop received");
+          setDragOver(false);
+          const paths = event.payload.paths;
+          addLog(`[DragDrop] paths: ${JSON.stringify(paths)}`);
+          const validPath = paths.find((p) =>
+            [".txt", ".epub", ".pdf"].some((ext) => p.toLowerCase().endsWith(ext))
+          );
+          if (validPath) {
+            addLog(`[DragDrop] validPath: ${validPath}`);
+            setImporting(true);
+            try {
+              await importNovel(validPath);
+              addLog("[DragDrop] importNovel success");
+            } catch (e: any) {
+              addLog(`[DragDrop] importNovel error: ${e?.message || String(e)}`);
+              alert(`导入失败: ${e?.message || String(e)}`);
+            } finally {
+              setImporting(false);
+            }
+          } else {
+            addLog("[DragDrop] no valid path found");
+          }
+        });
+        addLog("[DragDrop] tauri://drag-drop listener registered");
+
+        unlistenOver = await listen("tauri://drag-over", () => {
+          addLog("[DragDrop] tauri://drag-over");
+          setDragOver(true);
+        });
+
+        unlistenLeave = await listen("tauri://drag-leave", () => {
+          addLog("[DragDrop] tauri://drag-leave");
+          setDragOver(false);
+        });
+      } catch (e: any) {
+        addLog(`[DragDrop] setup error: ${e?.message || String(e)}`);
+      }
+    };
+
+    setup();
+    return () => {
+      addLog("[NovelList] UNMOUNTED");
+      unlistenDrop?.();
+      unlistenOver?.();
+      unlistenLeave?.();
+    };
+  }, [importNovel]);
+
+  const handleImportClick = async () => {
+    addLog("[ImportClick] BUTTON CLICKED");
+    try {
+      addLog("[ImportClick] opening dialog...");
+      const file = await open({
+        multiple: false,
+        directory: false,
+        filters: [{ name: "Novel Files", extensions: ["txt", "epub", "pdf"] }],
+      });
+      addLog(`[ImportClick] dialog result: ${JSON.stringify(file)}`);
+      if (file && typeof file === "string") {
+        setImporting(true);
+        try {
+          await importNovel(file);
+          addLog("[ImportClick] importNovel success");
+        } catch (e: any) {
+          addLog(`[ImportClick] importNovel error: ${e?.message || String(e)}`);
+          alert(`导入失败: ${e?.message || String(e)}`);
+        } finally {
           setImporting(false);
         }
+      } else if (file === null) {
+        addLog("[ImportClick] user cancelled dialog");
+      } else {
+        addLog(`[ImportClick] unexpected result: ${JSON.stringify(file)}`);
       }
-    },
-    [importNovel]
-  );
-
-  const handleDragOver = (e: React.DragEvent) => {
-    e.preventDefault();
-    setDragOver(true);
-  };
-
-  const handleDragLeave = () => {
-    setDragOver(false);
+    } catch (e: any) {
+      addLog(`[ImportClick] dialog error: ${e?.message || String(e)}`);
+      console.error("[Import] dialog error:", e);
+      alert(`打开文件对话框失败: ${e?.message || String(e)}`);
+    }
   };
 
   const handleDelete = async (id: string, title: string) => {
@@ -109,10 +189,12 @@ export default function NovelList() {
       className={`flex flex-col h-full p-4 transition-colors ${
         dragOver ? "bg-primary/5" : ""
       }`}
-      onDrop={handleDrop}
-      onDragOver={handleDragOver}
-      onDragLeave={handleDragLeave}
     >
+      {/* 无条件调试块：只要 NovelList 被渲染就一定可见 */}
+      <div className="mb-2 p-2 bg-red-700 text-white text-xs rounded font-mono">
+        [DEBUG] NovelList rendered | logs={logs.length} | isLoading={String(isLoading)} | importing={String(importing)} | novels={novels.length}
+      </div>
+
       <div className="flex items-center justify-between mb-4">
         <h2 className="text-lg font-semibold text-text-main">我的小说</h2>
         <button
@@ -123,6 +205,24 @@ export default function NovelList() {
           {isLoading || importing ? "导入中..." : "导入小说"}
         </button>
       </div>
+
+      {/* 持久化日志显示区 */}
+      {logs.length > 0 && (
+        <div className="mb-4 p-2 bg-gray-900 text-green-400 text-xs rounded border border-gray-700 font-mono max-h-40 overflow-auto">
+          <div className="flex justify-between items-center mb-1">
+            <span className="font-bold text-gray-300">NovelList 日志</span>
+            <button
+              onClick={() => clearLogs()}
+              className="text-gray-500 hover:text-white text-xs cursor-pointer"
+            >
+              清除
+            </button>
+          </div>
+          {logs.map((log, i) => (
+            <div key={i} className="truncate">{log}</div>
+          ))}
+        </div>
+      )}
 
       {/* 拖拽提示 */}
       {dragOver && (
@@ -209,8 +309,8 @@ export default function NovelList() {
                     />
                   </div>
                   <div className="text-xs text-text-muted mt-0.5">
-                    进度: {progress}%（章节 {novel.progress.chaptersExtracted} / 向量{" "}
-                    {novel.progress.vectorsIndexed} / 实体 {novel.progress.entitiesExtracted}）
+                    进度: {progress}%（章节 {novel.progress?.chaptersExtracted ?? 0} / 向量{" "}
+                    {novel.progress?.vectorsIndexed ?? 0} / 实体 {novel.progress?.entitiesExtracted ?? 0}）
                   </div>
                 </div>
               )}

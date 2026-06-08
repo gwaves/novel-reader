@@ -21,7 +21,8 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": null,
+      "capabilities": ["default"]
     }
   },
   "bundle": {
@@ -34,6 +35,9 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
+    "resources": {
+      "resources/sidecar": "sidecar"
+    },
     "macOS": {
       "frameworks": [],
       "minimumSystemVersion": "14.0",

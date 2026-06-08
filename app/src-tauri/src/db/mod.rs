@@ -83,6 +83,17 @@ impl AppDb {
             CREATE INDEX IF NOT EXISTS idx_chat_messages_session ON chat_messages(session_id);
             "#,
         )?;
+
+        // 修复旧数据中 is_default 存成 "true"/"false" 文本的问题
+        let _ = conn.execute(
+            "UPDATE model_configs SET is_default = 1 WHERE is_default = 'true' OR is_default = '1'",
+            [],
+        );
+        let _ = conn.execute(
+            "UPDATE model_configs SET is_default = 0 WHERE is_default = 'false' OR is_default = '0' OR is_default IS NULL",
+            [],
+        );
+
         Ok(())
     }
 
@@ -222,7 +233,7 @@ impl AppDb {
                 &config.base_url,
                 &config.model_name,
                 config.api_key_ref.as_deref().unwrap_or(""),
-                &config.is_default.to_string(),
+                &(if config.is_default { 1 } else { 0 }).to_string(),
                 &config.created_at.to_string(),
             ],
         )?;

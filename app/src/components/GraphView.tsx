@@ -154,6 +154,7 @@ export default function GraphView({ novelId }: Props) {
       cyRef.current?.elements().remove();
       return;
     }
+    console.log("[GraphView] fetchGraphData novelId=", novelId, "nodeTypes=", filters.nodeTypes);
     fetchGraphData(novelId, { nodeTypes: filters.nodeTypes });
   }, [novelId, filters.nodeTypes, fetchGraphData, clearGraph]);
 
@@ -327,6 +328,18 @@ export default function GraphView({ novelId }: Props) {
         {isLoading && (
           <div className="absolute inset-0 bg-bg-base/50 flex items-center justify-center pointer-events-none">
             <div className="text-text-muted text-sm">加载图谱中...</div>
+          </div>
+        )}
+
+        {/* 空数据提示 */}
+        {!isLoading && nodes.length === 0 && (
+          <div className="absolute inset-0 flex items-center justify-center">
+            <div className="text-center text-text-muted">
+              <div className="text-4xl mb-4">🕸️</div>
+              <div className="text-lg font-medium">暂无图谱数据</div>
+              <div className="text-sm mt-1">小说解析完成后，人物关系图谱将在此显示</div>
+              <div className="text-xs mt-2 text-text-muted/60">novelId: {novelId} | nodes: {nodes.length} | edges: {edges.length}</div>
+            </div>
           </div>
         )}
       </div>

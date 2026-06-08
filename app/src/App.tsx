@@ -91,6 +91,10 @@ function App() {
 
       {/* Main Content */}
       <main className="flex-1 overflow-hidden flex flex-col min-w-0">
+        {/* 全局 tab 调试指示器 */}
+        <div className="p-1 bg-yellow-300 text-black text-xs font-mono text-center select-none">
+          [App Debug] currentTab={currentTab} | hash={window.location.hash}
+        </div>
         <div className="flex-1 overflow-hidden">
           {currentTab === "novels" && <NovelList />}
           {currentTab === "graph" && <GraphView novelId={selectedNovelId} />}

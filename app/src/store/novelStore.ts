@@ -13,6 +13,30 @@ import type {
   ParseProgress,
 } from "../types";
 
+/** 规范化后端返回的小说数据：处理 progress_json / snake_case */
+function normalizeNovel(raw: any): Novel {
+  const progress: ParseProgress = raw.progress || (() => {
+    try {
+      return JSON.parse(raw.progress_json || "{\"chaptersExtracted\":0,\"vectorsIndexed\":0,\"entitiesExtracted\":0}");
+    } catch {
+      return { chaptersExtracted: 0, vectorsIndexed: 0, entitiesExtracted: 0 };
+    }
+  })();
+  return {
+    id: raw.id,
+    title: raw.title,
+    author: raw.author,
+    sourcePath: raw.source_path || raw.sourcePath,
+    format: raw.format,
+    totalChars: raw.total_chars ?? raw.totalChars ?? 0,
+    totalChapters: raw.total_chapters ?? raw.totalChapters ?? 0,
+    status: raw.status,
+    progress,
+    createdAt: raw.created_at ?? raw.createdAt ?? 0,
+    updatedAt: raw.updated_at ?? raw.updatedAt ?? 0,
+  };
+}
+
 // ============================================================
 // Novel Store
 // ============================================================
@@ -63,9 +87,9 @@ export const useNovelStore = create<NovelState>((set, get) => ({
   fetchNovels: async () => {
     set({ isLoading: true, error: null });
     try {
-      const res = await invoke<ApiResult<{ novels: Novel[] }>>("list_novels");
+      const res = await invoke<ApiResult<{ novels: any[] }>>("list_novels");
       if (res.success && res.data) {
-        set({ novels: res.data.novels });
+        set({ novels: res.data.novels.map(normalizeNovel) });
       } else {
         set({ error: res.error?.message || "获取小说列表失败" });
       }
@@ -79,12 +103,13 @@ export const useNovelStore = create<NovelState>((set, get) => ({
   importNovel: async (filePath: string) => {
     set({ isLoading: true, error: null });
     try {
-      const res = await invoke<ApiResult<{ novel: Novel }>>("import_novel", {
+      const res = await invoke<ApiResult<{ novel: any }>>("import_novel", {
         filePath,
       });
       if (res.success && res.data) {
-        get().addNovel(res.data.novel);
-        return res.data.novel;
+        const novel = normalizeNovel(res.data.novel);
+        get().addNovel(novel);
+        return novel;
       } else {
         set({ error: res.error?.message || "导入失败" });
         return null;

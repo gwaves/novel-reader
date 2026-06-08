@@ -22,6 +22,7 @@ uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 rusqlite = { version = "0.32", features = ["bundled", "chrono", "uuid"] }
 dirs = "5"
+walkdir = "2"
 
 # Keychain (macOS)
 security-framework = "2"

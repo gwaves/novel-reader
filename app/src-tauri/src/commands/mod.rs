@@ -656,17 +656,30 @@ pub async fn list_model_configs(
     }
 }
 
+fn append_log(app_dir: &std::path::Path, msg: &str) {
+    use std::io::Write;
+    let log_path = app_dir.join("command.log");
+    let line = format!("{} {}\n", chrono::Utc::now().to_rfc3339(), msg);
+    let _ = std::fs::OpenOptions::new().create(true).append(true).open(&log_path)
+        .and_then(|mut f| f.write_all(line.as_bytes()));
+}
+
 #[tauri::command]
 pub async fn upsert_model_config(
     state: State<'_, AppState>,
     config: Value,
 ) -> Result<ApiResult<()>, String> {
+    append_log(&state.app_dir, "[upsert_model_config] called");
+    append_log(&state.app_dir, &format!("[upsert_model_config] config: {}", config.to_string()));
+
     let id = config.get("id").and_then(|v| v.as_str()).unwrap_or(&Uuid::new_v4().to_string()).to_string();
     let name = config.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
     let base_url = config.get("baseUrl").and_then(|v| v.as_str()).unwrap_or("").to_string();
     let model_name = config.get("modelName").and_then(|v| v.as_str()).unwrap_or("").to_string();
     let api_key = config.get("apiKeyRef").or_else(|| config.get("apiKey")).and_then(|v| v.as_str());
     let is_default = config.get("isDefault").and_then(|v| v.as_bool()).unwrap_or(false);
+
+    append_log(&state.app_dir, &format!("[upsert_model_config] extracted: id={} name={} base_url={} model={}", id, name, base_url, model_name));
 
     // Store API key in Keychain
     if let Some(key) = api_key {
@@ -683,9 +696,17 @@ pub async fn upsert_model_config(
         created_at: chrono::Utc::now().timestamp_millis(),
     };
 
+    append_log(&state.app_dir, "[upsert_model_config] inserting...");
+
     match state.db_pool.insert_model_config(&db_config) {
-        Ok(()) => Ok(ApiResult::ok(())),
-        Err(e) => Ok(ApiResult::err("DB_ERROR", &e.to_string())),
+        Ok(()) => {
+            append_log(&state.app_dir, "[upsert_model_config] SUCCESS");
+            Ok(ApiResult::ok(()))
+        }
+        Err(e) => {
+            append_log(&state.app_dir, &format!("[upsert_model_config] DB_ERROR: {}", e));
+            Ok(ApiResult::err("DB_ERROR", &e.to_string()))
+        }
     }
 }
 

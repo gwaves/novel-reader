@@ -1,12 +1,13 @@
 use std::path::PathBuf;
-use tauri::AppHandle;
+use tauri::{AppHandle, Manager};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
 use tokio::process::{Child, Command};
 use serde_json::Value;
+use walkdir::WalkDir;
 
 pub struct SidecarManager {
-    _app_handle: AppHandle,
+    app_handle: AppHandle,
     app_dir: PathBuf,
     process: Option<Child>,
     socket_path: PathBuf,
@@ -16,29 +17,122 @@ impl SidecarManager {
     pub fn new(app_handle: AppHandle, app_dir: PathBuf) -> Self {
         let socket_path = app_dir.join("sidecar.sock");
         Self {
-            _app_handle: app_handle,
+            app_handle,
             app_dir,
             process: None,
             socket_path,
         }
     }
 
+    /// 首次运行时自动部署 sidecar：从 app bundle resources 复制源码、创建 venv、安装依赖
+    async fn ensure_deployed(&self) -> anyhow::Result<()> {
+        let sidecar_dir = self.app_dir.join("sidecar");
+        let server_py = sidecar_dir.join("src/server.py");
+
+        // 如果已经部署过，直接返回
+        if server_py.exists() {
+            return Ok(());
+        }
+
+        println!("[Sidecar] First run detected, deploying sidecar...");
+
+        // 1. 从 app bundle resources 复制 sidecar 源码
+        let resource_dir = self.app_handle.path().resource_dir()
+            .map_err(|e| anyhow::anyhow!("Failed to get resource dir: {}", e))?;
+        let bundled_sidecar = resource_dir.join("sidecar");
+
+        if !bundled_sidecar.exists() {
+            anyhow::bail!("Bundled sidecar not found at {:?}", bundled_sidecar);
+        }
+
+        std::fs::create_dir_all(&sidecar_dir)?;
+        copy_dir_all(&bundled_sidecar, &sidecar_dir)
+            .map_err(|e| anyhow::anyhow!("Failed to copy sidecar: {}", e))?;
+
+        println!("[Sidecar] Source copied to {:?}", sidecar_dir);
+
+        // 2. 创建 Python 虚拟环境（优先使用 python3.11，避免 Python 3.14 兼容性问题）
+        let venv_dir = sidecar_dir.join("venv");
+        let venv_python = venv_dir.join("bin/python3");
+
+        if !venv_python.exists() {
+            // 尝试找到合适的 Python 版本
+            let python_candidates = ["python3.11", "python3.12", "python3.10", "python3"];
+            let mut chosen_python: Option<&str> = None;
+            for py in &python_candidates {
+                let check = Command::new("which").arg(py).output().await;
+                if let Ok(out) = check {
+                    if out.status.success() {
+                        chosen_python = Some(py);
+                        break;
+                    }
+                }
+            }
+            let python = chosen_python.ok_or_else(|| anyhow::anyhow!("No suitable Python found (tried python3.11, python3.12, python3.10, python3)"))?;
+            println!("[Sidecar] Using {} to create virtual environment...", python);
+
+            let output = Command::new(python)
+                .args(["-m", "venv", venv_dir.to_string_lossy().as_ref()])
+                .output()
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to create venv: {}", e))?;
+
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                anyhow::bail!("venv creation failed: {}", stderr);
+            }
+            println!("[Sidecar] Virtual environment created");
+        }
+
+        // 3. 安装依赖
+        let requirements = sidecar_dir.join("requirements.txt");
+        if requirements.exists() {
+            println!("[Sidecar] Installing Python dependencies...");
+            let output = Command::new(venv_python.to_string_lossy().as_ref())
+                .args(["-m", "pip", "install", "-r", requirements.to_string_lossy().as_ref()])
+                .output()
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to install dependencies: {}", e))?;
+
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                anyhow::bail!("pip install failed: {}", stderr);
+            }
+            println!("[Sidecar] Dependencies installed");
+        }
+
+        println!("[Sidecar] Deployment complete");
+        Ok(())
+    }
+
     pub async fn start(&mut self) -> anyhow::Result<()> {
+        // 首次运行时自动部署
+        self.ensure_deployed().await?;
+
         // Clean up old socket
         if self.socket_path.exists() {
             let _ = std::fs::remove_file(&self.socket_path);
         }
 
-        let sidecar_bin = self.app_dir.join("sidecar/novel-ai-engine");
-        let server_py = self.app_dir.join("sidecar/src/server.py");
-        let project_server_py = PathBuf::from("/Users/gwaves/code/my-reader/app/sidecar/src/server.py");
+        let sidecar_dir = self.app_dir.join("sidecar");
+        let sidecar_bin = sidecar_dir.join("novel-ai-engine");
+        let server_py = sidecar_dir.join("src/server.py");
+        let venv_python = sidecar_dir.join("venv/bin/python3");
 
         let (program, args) = if sidecar_bin.exists() {
             (sidecar_bin.to_string_lossy().to_string(), vec![self.socket_path.to_string_lossy().to_string()])
+        } else if server_py.exists() && venv_python.exists() {
+            // 使用虚拟环境中的 Python
+            (venv_python.to_string_lossy().to_string(), vec![
+                server_py.to_string_lossy().to_string(),
+                self.socket_path.to_string_lossy().to_string()
+            ])
         } else if server_py.exists() {
-            ("python3".to_string(), vec![server_py.to_string_lossy().to_string(), self.socket_path.to_string_lossy().to_string()])
-        } else if project_server_py.exists() {
-            ("python3".to_string(), vec![project_server_py.to_string_lossy().to_string(), self.socket_path.to_string_lossy().to_string()])
+            // 降级使用系统 Python3
+            ("python3".to_string(), vec![
+                server_py.to_string_lossy().to_string(),
+                self.socket_path.to_string_lossy().to_string()
+            ])
         } else {
             anyhow::bail!("Sidecar not found: neither binary nor server.py exists")
         };
@@ -47,21 +141,21 @@ impl SidecarManager {
         cmd.args(&args);
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
-        cmd.current_dir(&self.app_dir);
+        cmd.current_dir(&sidecar_dir);
 
         let child = cmd.spawn()
             .map_err(|e| anyhow::anyhow!("Failed to spawn sidecar: {}", e))?;
         self.process = Some(child);
 
         // Wait for socket file to appear
-        for _ in 0..30 {
+        for _ in 0..60 {
             tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
             if self.socket_path.exists() {
                 return Ok(());
             }
         }
 
-        anyhow::bail!("Sidecar failed to start within 6 seconds")
+        anyhow::bail!("Sidecar failed to start within 12 seconds")
     }
 
     pub async fn stop(&mut self) -> anyhow::Result<()> {
@@ -133,4 +227,22 @@ impl SidecarManager {
 
         Ok(response.get("result").cloned().unwrap_or(Value::Null))
     }
+}
+
+/// 递归复制目录
+fn copy_dir_all(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in WalkDir::new(src) {
+        let entry = entry?;
+        let path = entry.path();
+        let relative = path.strip_prefix(src).unwrap();
+        let dest = dst.join(relative);
+
+        if path.is_dir() {
+            std::fs::create_dir_all(&dest)?;
+        } else {
+            std::fs::copy(path, dest)?;
+        }
+    }
+    Ok(())
 }
