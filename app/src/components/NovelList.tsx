@@ -58,6 +58,7 @@ export default function NovelList() {
     deleteNovel,
     selectNovel,
     reparseNovel,
+    updateNovel,
   } = useNovelStore();
 
   const [dragOver, setDragOver] = useState(false);
@@ -106,8 +107,18 @@ export default function NovelList() {
         stage: string;
         message: string;
       }>("novel:progress", (event) => {
-        const { stage, message } = event.payload;
+        const { novelId, stage, message } = event.payload;
         addLog(`[ParseProgress] ${stage}: ${message}`);
+
+        // 后端开始解析后，立即把前端小说状态改为 parsing，触发进度条和轮询
+        if (stage !== "start") {
+          updateNovel(novelId, { status: "parsing" });
+        }
+
+        // 解析完成时刷新一次完整数据
+        if (stage === "completed" || stage === "entities_error" || stage === "no_model_config") {
+          fetchNovels();
+        }
       });
     };
 
