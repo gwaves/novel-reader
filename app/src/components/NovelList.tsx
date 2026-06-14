@@ -83,6 +83,19 @@ export default function NovelList() {
     fetchNovels();
   }, [fetchNovels]);
 
+  // 解析中自动轮询进度
+  useEffect(() => {
+    const interval = setInterval(() => {
+      const currentlyParsing = useNovelStore.getState().novels.some((n) => isParsing(n.status));
+      if (currentlyParsing) {
+        addLog("[NovelList] polling fetchNovels");
+        fetchNovels();
+      }
+    }, 2000);
+
+    return () => clearInterval(interval);
+  }, [fetchNovels]);
+
   // Tauri 原生拖拽事件监听
   useEffect(() => {
     let unlistenDrop: (() => void) | undefined;
