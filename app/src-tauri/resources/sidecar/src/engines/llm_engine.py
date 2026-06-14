@@ -1,10 +1,57 @@
 """LLM Engine - using openai SDK for OpenAI-compatible APIs."""
 
+import json
 import os
+import re
 from typing import Any, Dict, List, Optional, AsyncIterator
 
 import openai
 from openai import AsyncOpenAI
+
+
+def _parse_json_robust(content: Optional[str]) -> Dict[str, Any]:
+    """Robustly parse JSON from LLM output.
+
+    Handles markdown code blocks, leading/trailing whitespace, and common
+    formatting issues. Returns an empty dict if parsing fails.
+    """
+    if not content:
+        return {}
+
+    text = content.strip()
+
+    # Try direct parse first
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+
+    # Try to extract JSON from markdown code blocks
+    code_block_match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", text)
+    if code_block_match:
+        try:
+            return json.loads(code_block_match.group(1).strip())
+        except json.JSONDecodeError:
+            pass
+
+    # Try to find the outermost JSON object/array by bracket matching
+    for start_char, end_char in [("{", "}"), ("[", "]")]:
+        start = text.find(start_char)
+        if start == -1:
+            continue
+        depth = 0
+        for i, ch in enumerate(text[start:], start=start):
+            if ch == start_char:
+                depth += 1
+            elif ch == end_char:
+                depth -= 1
+                if depth == 0:
+                    try:
+                        return json.loads(text[start : i + 1])
+                    except json.JSONDecodeError:
+                        break
+
+    return {}
 
 
 class LLMEngine:
@@ -30,29 +77,32 @@ class LLMEngine:
     ) -> List[Dict[str, Any]]:
         """Extract entities (person, faction, item, skill, location) from text."""
         client = self._get_client(model_config)
-        system_prompt = (
-            "你是一个小说内容解析专家。请从以下文本中提取实体，"
-            "返回严格的 JSON 数组。每个实体包含字段："
-            "type (person/faction/item/skill/location), name, aliases (数组), "
-            "description, metadata (对象)。"
-        )
+        system_prompt = """你是一个小说内容解析专家。请从以下文本中提取实体，
+返回一个 JSON 对象，格式如下：
+{"entities": [{"type": "person", "name": "...", "aliases": [], "description": "...", "metadata": {}}]}
+type 可选值：person/faction/item/skill/location。
+只返回 JSON，不要包含其他解释或 markdown 标记。"""
 
-        response = await client.chat.completions.create(
-            model=model_config["model_name"],
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": f"文本内容：\n{text}"},
-            ],
-            response_format={"type": "json_object"},
-            max_tokens=max_tokens,
-            temperature=model_config.get("temperature", 1.0),
-        )
+        try:
+            response = await client.chat.completions.create(
+                model=model_config["model_name"],
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": f"文本内容：\n{text}"},
+                ],
+                response_format={"type": "json_object"},
+                max_tokens=max_tokens,
+                temperature=model_config.get("temperature", 1.0),
+            )
+        except Exception as e:
+            print(f"[LLMEngine] extract_entities API error: {e}", flush=True)
+            return []
 
         content = response.choices[0].message.content
-        import json
-
-        data = json.loads(content) if content else {}
-        return data.get("entities", [])
+        data = _parse_json_robust(content)
+        entities = data.get("entities", [])
+        print(f"[LLMEngine] extract_entities parsed {len(entities)} entities", flush=True)
+        return entities
 
     async def extract_relations(
         self,
@@ -63,38 +113,42 @@ class LLMEngine:
     ) -> List[Dict[str, Any]]:
         """Extract relations between given entities from text."""
         client = self._get_client(model_config)
-        system_prompt = (
-            "你是一个小说关系抽取专家。给定文本和实体列表，"
-            "抽取实体之间的关系。返回 JSON 数组，每个关系包含："
-            "from (实体name), to (实体name), type (关系类型), description。"
-            "关系类型可选：master_of, disciple_of, spouse_of, sibling_of, "
-            "parent_of, child_of, ally_of, enemy_of, friend_of, "
-            "belongs_to, leader_of, founder_of, practices, creator_of, "
-            "owns, uses, allied_with, hostile_to, related_to。"
-        )
+        system_prompt = """你是一个小说关系抽取专家。给定文本和实体列表，
+抽取实体之间的关系。返回一个 JSON 对象，格式如下：
+{"relations": [{"from": "...", "to": "...", "type": "...", "description": "..."}]}
+关系类型可选：master_of, disciple_of, spouse_of, sibling_of,
+parent_of, child_of, ally_of, enemy_of, friend_of,
+belongs_to, leader_of, founder_of, practices, creator_of,
+owns, uses, allied_with, hostile_to, related_to。
+只返回 JSON，不要包含其他解释或 markdown 标记。"""
 
         entity_list = "\n".join(
             [f"- {e['type']}: {e['name']}" for e in entities]
         )
-        response = await client.chat.completions.create(
-            model=model_config["model_name"],
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {
-                    "role": "user",
-                    "content": f"实体列表：\n{entity_list}\n\n文本内容：\n{text}",
-                },
-            ],
-            response_format={"type": "json_object"},
-            max_tokens=max_tokens,
-            temperature=model_config.get("temperature", 1.0),
-        )
+
+        try:
+            response = await client.chat.completions.create(
+                model=model_config["model_name"],
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {
+                        "role": "user",
+                        "content": f"实体列表：\n{entity_list}\n\n文本内容：\n{text}",
+                    },
+                ],
+                response_format={"type": "json_object"},
+                max_tokens=max_tokens,
+                temperature=model_config.get("temperature", 1.0),
+            )
+        except Exception as e:
+            print(f"[LLMEngine] extract_relations API error: {e}", flush=True)
+            return []
 
         content = response.choices[0].message.content
-        import json
-
-        data = json.loads(content) if content else {}
-        return data.get("relations", [])
+        data = _parse_json_robust(content)
+        relations = data.get("relations", [])
+        print(f"[LLMEngine] extract_relations parsed {len(relations)} relations", flush=True)
+        return relations
 
     async def chat(
         self,
@@ -148,7 +202,6 @@ class LLMEngine:
             temperature=model_config.get("temperature", 1.0),
             stream=True,
         )
-
         async for chunk in stream:
             delta = chunk.choices[0].delta.content
             if delta:
