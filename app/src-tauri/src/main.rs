@@ -75,6 +75,7 @@ pub fn main() {
             get_novel,
             delete_novel,
             get_parse_progress,
+            reparse_novel,
             get_graph_data,
             search_entities,
             get_entity_detail,

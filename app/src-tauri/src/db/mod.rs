@@ -183,6 +183,26 @@ impl AppDb {
         Ok(())
     }
 
+    pub fn update_novel_meta(&self, novel_id: &str, total_chars: i64, total_chapters: i64) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE novels SET total_chars = ?1, total_chapters = ?2, updated_at = ?3 WHERE id = ?4",
+            [
+                &total_chars.to_string(),
+                &total_chapters.to_string(),
+                &chrono::Utc::now().timestamp_millis().to_string(),
+                novel_id,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_chapters_by_novel(&self, novel_id: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("DELETE FROM chapters WHERE novel_id = ?1", [novel_id])?;
+        Ok(())
+    }
+
     pub fn delete_novel(&self, novel_id: &str) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute("DELETE FROM novels WHERE id = ?1", [novel_id])?;

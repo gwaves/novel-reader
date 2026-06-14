@@ -1,10 +1,92 @@
 use crate::config_manager::ConfigManager;
 use crate::models::*;
+use crate::services::sidecar_manager::SidecarManager;
 use crate::AppState;
 use serde_json::Value;
 use std::path::PathBuf;
+use std::sync::Arc;
 use tauri::{AppHandle, Emitter, State};
+use tokio::sync::Mutex;
 use uuid::Uuid;
+
+/// 启动后台实体提取任务
+fn spawn_extraction_task(
+    db_pool: Arc<crate::db::AppDb>,
+    sidecar: Arc<Mutex<SidecarManager>>,
+    novel_id: String,
+    paragraphs_arr: Vec<Value>,
+) {
+    tauri::async_runtime::spawn(async move {
+        let _ = db_pool.update_novel_status(
+            &novel_id,
+            "parsing",
+            Some("{\"chaptersExtracted\":100,\"vectorsIndexed\":0,\"entitiesExtracted\":10}"),
+        );
+
+        let text = paragraphs_arr
+            .iter()
+            .filter_map(|p| p.get("text").and_then(|t| t.as_str()))
+            .take(50)
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        if text.len() > 100 {
+            let model_config = get_default_model_config_for_sidecar(&db_pool).await;
+            if let Some(cfg) = model_config {
+                let sidecar_guard = sidecar.lock().await;
+                if let Ok(res) = sidecar_guard
+                    .send_request(
+                        "llm.extractEntities",
+                        serde_json::json!({"text": &text[..text.len().min(8000)], "modelConfig": cfg, "maxTokens": 4096}),
+                    )
+                    .await
+                {
+                    if let Some(entities) = res.get("entities").and_then(|e| e.as_array()) {
+                        let entities_with_id: Vec<Value> = entities
+                            .iter()
+                            .enumerate()
+                            .map(|(i, e)| {
+                                let mut e = e.clone();
+                                e["id"] = Value::String(format!("{}#e{}", novel_id, i));
+                                e["novelId"] = Value::String(novel_id.clone());
+                                e
+                            })
+                            .collect();
+                        let _ = db_pool.insert_entities(&entities_with_id);
+
+                        if let Ok(rel_res) = sidecar_guard
+                            .send_request(
+                                "llm.extractRelations",
+                                serde_json::json!({"text": &text[..text.len().min(8000)], "entities": entities_with_id, "modelConfig": cfg, "maxTokens": 4096}),
+                            )
+                            .await
+                        {
+                            if let Some(relations) = rel_res.get("relations").and_then(|r| r.as_array()) {
+                                let relations_with_id: Vec<Value> = relations
+                                    .iter()
+                                    .enumerate()
+                                    .map(|(i, r)| {
+                                        let mut r = r.clone();
+                                        r["id"] = Value::String(format!("{}#r{}", novel_id, i));
+                                        r["novelId"] = Value::String(novel_id.clone());
+                                        r
+                                    })
+                                    .collect();
+                                let _ = db_pool.insert_relations(&relations_with_id);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        let _ = db_pool.update_novel_status(
+            &novel_id,
+            "completed",
+            Some("{\"chaptersExtracted\":100,\"vectorsIndexed\":0,\"entitiesExtracted\":100}"),
+        );
+    });
+}
 
 // ==================== Novel Commands ====================
 
@@ -107,78 +189,110 @@ pub async fn import_novel(
     }
 
     // Spawn background tasks: entity extraction + embedding
-    let db_pool = state.db_pool.clone();
-    let sidecar = state.sidecar.clone();
-    let app_dir = state.app_dir.clone();
-    let novel_id_bg = novel_id.clone();
-
-    tauri::async_runtime::spawn(async move {
-        // 1. Entity extraction
-        let _ = db_pool.update_novel_status(&novel_id_bg, "parsing", Some("{\"chaptersExtracted\":100,\"vectorsIndexed\":0,\"entitiesExtracted\":10}"));
-
-        // Extract text from all paragraphs for LLM processing
-        let text = paragraphs_arr
-            .iter()
-            .filter_map(|p| p.get("text").and_then(|t| t.as_str()))
-            .take(50) // Limit to first 50 paragraphs for MVP
-            .collect::<Vec<_>>()
-            .join("\n");
-
-        if text.len() > 100 {
-            let model_config = get_default_model_config_for_sidecar(&db_pool).await;
-            if let Some(cfg) = model_config {
-                let sidecar_guard = sidecar.lock().await;
-                if let Ok(res) = sidecar_guard
-                    .send_request(
-                        "llm.extractEntities",
-                        serde_json::json!({"text": &text[..text.len().min(8000)], "modelConfig": cfg, "maxTokens": 4096}),
-                    )
-                    .await
-                {
-                    if let Some(entities) = res.get("entities").and_then(|e| e.as_array()) {
-                        let entities_with_id: Vec<Value> = entities
-                            .iter()
-                            .enumerate()
-                            .map(|(i, e)| {
-                                let mut e = e.clone();
-                                e["id"] = Value::String(format!("{}#e{}", novel_id_bg, i));
-                                e["novelId"] = Value::String(novel_id_bg.clone());
-                                e
-                            })
-                            .collect();
-                        let _ = db_pool.insert_entities(&entities_with_id);
-
-                        // Extract relations
-                        if let Ok(rel_res) = sidecar_guard
-                            .send_request(
-                                "llm.extractRelations",
-                                serde_json::json!({"text": &text[..text.len().min(8000)], "entities": entities_with_id, "modelConfig": cfg, "maxTokens": 4096}),
-                            )
-                            .await
-                        {
-                            if let Some(relations) = rel_res.get("relations").and_then(|r| r.as_array()) {
-                                let relations_with_id: Vec<Value> = relations
-                                    .iter()
-                                    .enumerate()
-                                    .map(|(i, r)| {
-                                        let mut r = r.clone();
-                                        r["id"] = Value::String(format!("{}#r{}", novel_id_bg, i));
-                                        r["novelId"] = Value::String(novel_id_bg.clone());
-                                        r
-                                    })
-                                    .collect();
-                                let _ = db_pool.insert_relations(&relations_with_id);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        let _ = db_pool.update_novel_status(&novel_id_bg, "completed", Some("{\"chaptersExtracted\":100,\"vectorsIndexed\":0,\"entitiesExtracted\":100}"));
-    });
+    spawn_extraction_task(
+        state.db_pool.clone(),
+        state.sidecar.clone(),
+        novel_id.clone(),
+        paragraphs_arr.clone(),
+    );
 
     Ok(ApiResult::ok(serde_json::json!({"novel": novel})))
+}
+
+#[tauri::command]
+pub async fn reparse_novel(
+    state: State<'_, AppState>,
+    novel_id: String,
+) -> Result<ApiResult<Value>, String> {
+    // 1. 获取已有小说
+    let novel = match state.db_pool.get_novel(&novel_id) {
+        Ok(Some(n)) => n,
+        Ok(None) => return Ok(ApiResult::err("NOT_FOUND", "Novel not found")),
+        Err(e) => return Ok(ApiResult::err("DB_ERROR", &e.to_string())),
+    };
+
+    let source_path = PathBuf::from(&novel.source_path);
+    if !source_path.exists() {
+        return Ok(ApiResult::err("IO_ERROR", "Source file not found"));
+    }
+
+    let ext = source_path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("txt")
+        .to_lowercase();
+
+    // 2. 重新解析文档
+    let parse_result = {
+        let sidecar = state.sidecar.lock().await;
+        sidecar
+            .send_request(
+                "parse.document",
+                serde_json::json!({"filePath": source_path.to_string_lossy(), "format": ext}),
+            )
+            .await
+    };
+
+    let parsed = match parse_result {
+        Ok(v) => v,
+        Err(e) => return Ok(ApiResult::err("PARSE_ERROR", &format!("Sidecar parse failed: {}", e))),
+    };
+
+    let chapters_json = parsed.get("chapters").cloned().unwrap_or(Value::Array(vec![]));
+    let paragraphs_json = parsed.get("paragraphs").cloned().unwrap_or(Value::Array(vec![]));
+    let chapters_arr = chapters_json.as_array().cloned().unwrap_or_default();
+    let paragraphs_arr = paragraphs_json.as_array().cloned().unwrap_or_default();
+
+    // 3. 更新小说元数据
+    let total_chars: i64 = paragraphs_arr.iter().filter_map(|p| p.get("text").and_then(|t| t.as_str()).map(|t| t.len() as i64)).sum();
+    if let Err(e) = state.db_pool.update_novel_meta(&novel_id, total_chars, chapters_arr.len() as i64) {
+        return Ok(ApiResult::err("DB_ERROR", &format!("Failed to update novel meta: {}", e)));
+    }
+
+    // 4. 删除旧章节、实体、关系
+    let _ = state.db_pool.delete_chapters_by_novel(&novel_id);
+    let _ = state.db_pool.delete_entities_by_novel(&novel_id);
+
+    // 5. 插入新章节
+    let chapters: Vec<Chapter> = chapters_arr
+        .iter()
+        .filter_map(|c| {
+            Some(Chapter {
+                novel_id: novel_id.clone(),
+                idx: c.get("index")?.as_i64()? as i32,
+                title: c.get("title")?.as_str()?.to_string(),
+                level: c.get("level")?.as_i64().unwrap_or(1) as i32,
+                content_ref: None,
+                char_count: c.get("charCount")?.as_i64().unwrap_or(0) as i32,
+                start_paragraph_idx: c.get("startParagraphIndex").and_then(|v| v.as_i64()).map(|v| v as i32),
+                end_paragraph_idx: c.get("endParagraphIndex").and_then(|v| v.as_i64()).map(|v| v as i32),
+            })
+        })
+        .collect();
+
+    if let Err(e) = state.db_pool.insert_chapters(&chapters) {
+        return Ok(ApiResult::err("DB_ERROR", &format!("Failed to insert chapters: {}", e)));
+    }
+
+    // 6. 更新状态为 parsing 并启动后台提取
+    let _ = state.db_pool.update_novel_status(
+        &novel_id,
+        "parsing",
+        Some("{\"chaptersExtracted\":100,\"vectorsIndexed\":0,\"entitiesExtracted\":10}"),
+    );
+
+    spawn_extraction_task(
+        state.db_pool.clone(),
+        state.sidecar.clone(),
+        novel_id.clone(),
+        paragraphs_arr,
+    );
+
+    // 7. 返回更新后的小说
+    match state.db_pool.get_novel(&novel_id) {
+        Ok(Some(n)) => Ok(ApiResult::ok(serde_json::json!({"novel": n}))),
+        _ => Ok(ApiResult::err("DB_ERROR", "Failed to get updated novel")),
+    }
 }
 
 #[tauri::command]
