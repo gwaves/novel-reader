@@ -89,7 +89,6 @@ export default function NovelList() {
     const interval = setInterval(() => {
       const currentlyParsing = useNovelStore.getState().novels.some((n) => isParsing(n.status));
       if (currentlyParsing) {
-        addLog("[NovelList] polling fetchNovels");
         fetchNovels();
       }
     }, 2000);
