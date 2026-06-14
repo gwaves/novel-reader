@@ -96,6 +96,25 @@ export default function NovelList() {
     return () => clearInterval(interval);
   }, [fetchNovels]);
 
+  // 监听后端解析进度事件
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+
+    const setup = async () => {
+      unlisten = await listen<{
+        novelId: string;
+        stage: string;
+        message: string;
+      }>("novel:progress", (event) => {
+        const { stage, message } = event.payload;
+        addLog(`[ParseProgress] ${stage}: ${message}`);
+      });
+    };
+
+    setup();
+    return () => unlisten?.();
+  }, []);
+
   // Tauri 原生拖拽事件监听
   useEffect(() => {
     let unlistenDrop: (() => void) | undefined;

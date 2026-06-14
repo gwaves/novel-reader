@@ -11,17 +11,29 @@ use uuid::Uuid;
 
 /// 启动后台实体提取任务
 fn spawn_extraction_task(
+    app_handle: AppHandle,
     db_pool: Arc<crate::db::AppDb>,
     sidecar: Arc<Mutex<SidecarManager>>,
     novel_id: String,
     paragraphs_arr: Vec<Value>,
 ) {
+    let _ = app_handle.emit("novel:progress", serde_json::json!({
+        "novelId": novel_id,
+        "stage": "start",
+        "message": "开始后台实体提取",
+    }));
+
     tauri::async_runtime::spawn(async move {
         let _ = db_pool.update_novel_status(
             &novel_id,
             "parsing",
             Some("{\"chaptersExtracted\":100,\"vectorsIndexed\":0,\"entitiesExtracted\":10}"),
         );
+        let _ = app_handle.emit("novel:progress", serde_json::json!({
+            "novelId": novel_id,
+            "stage": "parsing",
+            "message": "状态更新为解析中，准备提取前 50 段文本",
+        }));
 
         let text = paragraphs_arr
             .iter()
@@ -31,6 +43,12 @@ fn spawn_extraction_task(
             .join("\n");
 
         if text.len() > 100 {
+            let _ = app_handle.emit("novel:progress", serde_json::json!({
+                "novelId": novel_id,
+                "stage": "extract_entities",
+                "message": format!("调用 LLM 提取实体，文本长度 {} 字符", text.len().min(8000)),
+            }));
+
             let model_config = get_default_model_config_for_sidecar(&db_pool).await;
             if let Some(cfg) = model_config {
                 let sidecar_guard = sidecar.lock().await;
@@ -42,6 +60,13 @@ fn spawn_extraction_task(
                     .await
                 {
                     if let Some(entities) = res.get("entities").and_then(|e| e.as_array()) {
+                        let entity_count = entities.len();
+                        let _ = app_handle.emit("novel:progress", serde_json::json!({
+                            "novelId": novel_id,
+                            "stage": "entities_done",
+                            "message": format!("提取到 {} 个实体，准备提取关系", entity_count),
+                        }));
+
                         let entities_with_id: Vec<Value> = entities
                             .iter()
                             .enumerate()
@@ -62,6 +87,13 @@ fn spawn_extraction_task(
                             .await
                         {
                             if let Some(relations) = rel_res.get("relations").and_then(|r| r.as_array()) {
+                                let relation_count = relations.len();
+                                let _ = app_handle.emit("novel:progress", serde_json::json!({
+                                    "novelId": novel_id,
+                                    "stage": "relations_done",
+                                    "message": format!("提取到 {} 个关系", relation_count),
+                                }));
+
                                 let relations_with_id: Vec<Value> = relations
                                     .iter()
                                     .enumerate()
@@ -75,9 +107,33 @@ fn spawn_extraction_task(
                                 let _ = db_pool.insert_relations(&relations_with_id);
                             }
                         }
+                    } else {
+                        let _ = app_handle.emit("novel:progress", serde_json::json!({
+                            "novelId": novel_id,
+                            "stage": "entities_empty",
+                            "message": "未提取到实体",
+                        }));
                     }
+                } else {
+                    let _ = app_handle.emit("novel:progress", serde_json::json!({
+                        "novelId": novel_id,
+                        "stage": "entities_error",
+                        "message": "实体提取失败",
+                    }));
                 }
+            } else {
+                let _ = app_handle.emit("novel:progress", serde_json::json!({
+                    "novelId": novel_id,
+                    "stage": "no_model_config",
+                    "message": "未找到默认模型配置，跳过实体提取",
+                }));
             }
+        } else {
+            let _ = app_handle.emit("novel:progress", serde_json::json!({
+                "novelId": novel_id,
+                "stage": "text_too_short",
+                "message": "文本过短，跳过实体提取",
+            }));
         }
 
         let _ = db_pool.update_novel_status(
@@ -85,6 +141,11 @@ fn spawn_extraction_task(
             "completed",
             Some("{\"chaptersExtracted\":100,\"vectorsIndexed\":0,\"entitiesExtracted\":100}"),
         );
+        let _ = app_handle.emit("novel:progress", serde_json::json!({
+            "novelId": novel_id,
+            "stage": "completed",
+            "message": "解析完成",
+        }));
     });
 }
 
@@ -92,6 +153,7 @@ fn spawn_extraction_task(
 
 #[tauri::command]
 pub async fn import_novel(
+    app_handle: AppHandle,
     state: State<'_, AppState>,
     file_path: String,
 ) -> Result<ApiResult<Value>, String> {
@@ -190,6 +252,7 @@ pub async fn import_novel(
 
     // Spawn background tasks: entity extraction + embedding
     spawn_extraction_task(
+        app_handle,
         state.db_pool.clone(),
         state.sidecar.clone(),
         novel_id.clone(),
@@ -201,6 +264,7 @@ pub async fn import_novel(
 
 #[tauri::command]
 pub async fn reparse_novel(
+    app_handle: AppHandle,
     state: State<'_, AppState>,
     novel_id: String,
 ) -> Result<ApiResult<Value>, String> {
@@ -282,6 +346,7 @@ pub async fn reparse_novel(
     );
 
     spawn_extraction_task(
+        app_handle,
         state.db_pool.clone(),
         state.sidecar.clone(),
         novel_id.clone(),
