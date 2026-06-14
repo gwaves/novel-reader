@@ -169,6 +169,7 @@ export interface ModelConfig {
   modelName: string;
   apiKeyRef?: string;
   isDefault?: boolean;
+  temperature?: number;
 }
 
 export interface ApiResult<T> {

@@ -646,7 +646,8 @@ pub async fn list_model_configs(
                         "baseUrl": c.base_url,
                         "modelName": c.model_name,
                         "apiKeyRef": c.api_key_ref,
-                        "isDefault": c.is_default
+                        "isDefault": c.is_default,
+                        "temperature": c.temperature
                     })
                 })
                 .collect();
@@ -670,7 +671,8 @@ pub async fn upsert_model_config(
     config: Value,
 ) -> Result<ApiResult<()>, String> {
     append_log(&state.app_dir, "[upsert_model_config] called");
-    append_log(&state.app_dir, &format!("[upsert_model_config] config: {}", config.to_string()));
+    // 注意：不再记录包含 apiKeyRef 的 config 明文
+    append_log(&state.app_dir, "[upsert_model_config] config received");
 
     let id = config.get("id").and_then(|v| v.as_str()).unwrap_or(&Uuid::new_v4().to_string()).to_string();
     let name = config.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
@@ -678,8 +680,9 @@ pub async fn upsert_model_config(
     let model_name = config.get("modelName").and_then(|v| v.as_str()).unwrap_or("").to_string();
     let api_key = config.get("apiKeyRef").or_else(|| config.get("apiKey")).and_then(|v| v.as_str());
     let is_default = config.get("isDefault").and_then(|v| v.as_bool()).unwrap_or(false);
+    let temperature = config.get("temperature").and_then(|v| v.as_f64()).unwrap_or(1.0) as f32;
 
-    append_log(&state.app_dir, &format!("[upsert_model_config] extracted: id={} name={} base_url={} model={}", id, name, base_url, model_name));
+    append_log(&state.app_dir, &format!("[upsert_model_config] extracted: id={} name={} base_url={} model={} temperature={}", id, name, base_url, model_name, temperature));
 
     // Store API key in Keychain
     if let Some(key) = api_key {
@@ -693,6 +696,7 @@ pub async fn upsert_model_config(
         model_name,
         api_key_ref: Some(format!("novelreader.apikey.{}", id)),
         is_default,
+        temperature,
         created_at: chrono::Utc::now().timestamp_millis(),
     };
 
@@ -750,7 +754,8 @@ pub async fn test_model_connection(
             let llm_config = serde_json::json!({
                 "base_url": config.base_url,
                 "model_name": config.model_name,
-                "api_key": api_key.unwrap_or_default()
+                "api_key": api_key.unwrap_or_default(),
+                "temperature": config.temperature
             });
 
             match sidecar
@@ -796,6 +801,7 @@ async fn get_default_model_config_for_sidecar(db: &crate::db::AppDb) -> Option<V
     Some(serde_json::json!({
         "base_url": default.base_url,
         "model_name": default.model_name,
-        "api_key": api_key.unwrap_or_default()
+        "api_key": api_key.unwrap_or_default(),
+        "temperature": default.temperature
     }))
 }

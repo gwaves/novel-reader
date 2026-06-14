@@ -45,7 +45,7 @@ class LLMEngine:
             ],
             response_format={"type": "json_object"},
             max_tokens=max_tokens,
-            temperature=0.2,
+            temperature=model_config.get("temperature", 1.0),
         )
 
         content = response.choices[0].message.content
@@ -87,7 +87,7 @@ class LLMEngine:
             ],
             response_format={"type": "json_object"},
             max_tokens=max_tokens,
-            temperature=0.2,
+            temperature=model_config.get("temperature", 1.0),
         )
 
         content = response.choices[0].message.content
@@ -119,7 +119,7 @@ class LLMEngine:
             model=model_config["model_name"],
             messages=all_messages,
             max_tokens=max_tokens,
-            temperature=0.7,
+            temperature=model_config.get("temperature", 1.0),
         )
         return response.choices[0].message.content or ""
 
@@ -145,7 +145,7 @@ class LLMEngine:
             model=model_config["model_name"],
             messages=all_messages,
             max_tokens=max_tokens,
-            temperature=0.7,
+            temperature=model_config.get("temperature", 1.0),
             stream=True,
         )
 

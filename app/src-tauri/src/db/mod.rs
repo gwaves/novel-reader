@@ -75,6 +75,7 @@ impl AppDb {
                 model_name TEXT NOT NULL,
                 api_key_ref TEXT,
                 is_default INTEGER DEFAULT 0,
+                temperature REAL DEFAULT 1.0,
                 created_at INTEGER
             );
 
@@ -83,6 +84,12 @@ impl AppDb {
             CREATE INDEX IF NOT EXISTS idx_chat_messages_session ON chat_messages(session_id);
             "#,
         )?;
+
+        // 兼容旧表：没有 temperature 列时添加（已存在则忽略错误）
+        let _ = conn.execute(
+            "ALTER TABLE model_configs ADD COLUMN temperature REAL DEFAULT 1.0",
+            [],
+        );
 
         // 修复旧数据中 is_default 存成 "true"/"false" 文本的问题
         let _ = conn.execute(
@@ -226,7 +233,7 @@ impl AppDb {
     pub fn insert_model_config(&self, config: &ModelConfig) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT OR REPLACE INTO model_configs (id, name, base_url, model_name, api_key_ref, is_default, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            "INSERT OR REPLACE INTO model_configs (id, name, base_url, model_name, api_key_ref, is_default, temperature, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             [
                 &config.id,
                 &config.name,
@@ -234,6 +241,7 @@ impl AppDb {
                 &config.model_name,
                 config.api_key_ref.as_deref().unwrap_or(""),
                 &(if config.is_default { 1 } else { 0 }).to_string(),
+                &config.temperature.to_string(),
                 &config.created_at.to_string(),
             ],
         )?;
@@ -243,7 +251,7 @@ impl AppDb {
     pub fn list_model_configs(&self) -> Result<Vec<ModelConfig>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, name, base_url, model_name, api_key_ref, is_default, created_at FROM model_configs ORDER BY created_at DESC"
+            "SELECT id, name, base_url, model_name, api_key_ref, is_default, temperature, created_at FROM model_configs ORDER BY created_at DESC"
         )?;
         let configs = stmt.query_map([], |row| {
             Ok(ModelConfig {
@@ -253,7 +261,8 @@ impl AppDb {
                 model_name: row.get(3)?,
                 api_key_ref: row.get(4)?,
                 is_default: row.get::<_, i32>(5)? != 0,
-                created_at: row.get(6)?,
+                temperature: row.get::<_, f64>(6)? as f32,
+                created_at: row.get(7)?,
             })
         })?;
         let result: Result<Vec<_>, _> = configs.collect();
@@ -263,7 +272,7 @@ impl AppDb {
     pub fn get_model_config(&self, config_id: &str) -> Result<Option<ModelConfig>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, name, base_url, model_name, api_key_ref, is_default, created_at FROM model_configs WHERE id = ?1"
+            "SELECT id, name, base_url, model_name, api_key_ref, is_default, temperature, created_at FROM model_configs WHERE id = ?1"
         )?;
         let config = stmt.query_row([config_id], |row| {
             Ok(ModelConfig {
@@ -273,7 +282,8 @@ impl AppDb {
                 model_name: row.get(3)?,
                 api_key_ref: row.get(4)?,
                 is_default: row.get::<_, i32>(5)? != 0,
-                created_at: row.get(6)?,
+                temperature: row.get::<_, f64>(6)? as f32,
+                created_at: row.get(7)?,
             })
         }).optional()?;
         Ok(config)

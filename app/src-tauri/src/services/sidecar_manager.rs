@@ -109,7 +109,19 @@ impl SidecarManager {
         // 首次运行时自动部署
         self.ensure_deployed().await?;
 
-        // Clean up old socket
+        let pid_file = self.app_dir.join("sidecar.pid");
+
+        // 1. 尝试终止旧 sidecar 进程（避免重启后出现多实例）
+        if pid_file.exists() {
+            if let Ok(pid_str) = std::fs::read_to_string(&pid_file) {
+                if let Ok(pid) = pid_str.trim().parse::<u32>() {
+                    let _ = Command::new("kill").arg("-9").arg(pid.to_string()).output().await;
+                }
+            }
+            let _ = std::fs::remove_file(&pid_file);
+        }
+
+        // 2. 清理旧 socket
         if self.socket_path.exists() {
             let _ = std::fs::remove_file(&self.socket_path);
         }
@@ -145,6 +157,11 @@ impl SidecarManager {
 
         let child = cmd.spawn()
             .map_err(|e| anyhow::anyhow!("Failed to spawn sidecar: {}", e))?;
+
+        // 记录 PID，便于下次启动时清理旧进程
+        if let Some(pid) = child.id() {
+            let _ = std::fs::write(&pid_file, pid.to_string());
+        }
         self.process = Some(child);
 
         // Wait for socket file to appear
@@ -164,6 +181,10 @@ impl SidecarManager {
         }
         if self.socket_path.exists() {
             let _ = std::fs::remove_file(&self.socket_path);
+        }
+        let pid_file = self.app_dir.join("sidecar.pid");
+        if pid_file.exists() {
+            let _ = std::fs::remove_file(&pid_file);
         }
         Ok(())
     }

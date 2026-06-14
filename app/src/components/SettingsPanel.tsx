@@ -113,6 +113,7 @@ export default function SettingsPanel() {
         modelName: editing.modelName,
         apiKeyRef: editing.apiKeyRef || "",
         isDefault: editing.isDefault ?? false,
+        temperature: editing.temperature ?? 1.0,
       };
       setDebugMsg("④ 准备调用 upsert_model_config...");
       addLog("[handleSave] invoking upsert_model_config with payload: " + JSON.stringify(payload));
@@ -128,6 +129,7 @@ export default function SettingsPanel() {
         addLog("[handleSave] SUCCESS");
         loadConfigs();
         setDebugMsg("⑥ 保存成功！");
+        setEditing(null);
       } else {
         addLog("[handleSave] FAILED: " + JSON.stringify(res.error));
         setSaveError(res.error?.message || "保存失败");
@@ -291,6 +293,30 @@ export default function SettingsPanel() {
               }
               className="w-full px-3 py-2 border border-border rounded text-sm focus:outline-none focus:ring-2 focus:ring-primary/30"
             />
+          </div>
+
+          <div className="space-y-2">
+            <label className="block text-sm text-text-muted">
+              Temperature（采样温度）
+            </label>
+            <input
+              type="number"
+              step="0.1"
+              min="0"
+              max="2"
+              placeholder="1.0"
+              value={editing.temperature ?? 1.0}
+              onChange={(e) =>
+                setEditing({
+                  ...editing,
+                  temperature: e.target.value === "" ? 1.0 : parseFloat(e.target.value),
+                })
+              }
+              className="w-full px-3 py-2 border border-border rounded text-sm focus:outline-none focus:ring-2 focus:ring-primary/30"
+            />
+            <p className="text-xs text-text-muted">
+              部分模型（如 kimi-k2.6）只支持 temperature=1.0
+            </p>
           </div>
 
           <div className="space-y-2">

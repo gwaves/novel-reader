@@ -35,6 +35,7 @@ pub struct ModelConfig {
     pub model_name: String,
     pub api_key_ref: Option<String>,
     pub is_default: bool,
+    pub temperature: f32,
     pub created_at: i64,
 }
 
